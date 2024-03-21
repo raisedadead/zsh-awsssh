@@ -45,6 +45,8 @@ _aws_ssh_main() {
   local tag_key_prompt="Enter tag key [$default_tag_key]: "
   local default_tag_value="*"
   local tag_value_prompt="Enter tag value [$default_tag_value]: "
+  local default_connection="ssh"
+  local connection_prompt="Enter connection type (ssm/ssh) - [$default_connection]: "
 
   echo -n "$region_prompt"
   read region
@@ -57,6 +59,10 @@ _aws_ssh_main() {
   echo -n "$tag_value_prompt"
   read tag_value
   tag_value=${tag_value:-$default_tag_value}
+
+  echo -n "$connection_prompt"
+  read connection
+  connection=${connection:-$default_connection}
 
   local selection=$(
     _aws_query_for_instances "$region" "$tag_key" "$tag_value" |
@@ -82,26 +88,36 @@ _aws_ssh_main() {
         --with-nth=1,2,3,4,5
   )
 
+  local name=$(echo $selection | awk '{print $1}')
   local public_dns=$(echo $selection | awk '{print $8}')
+  local instance_id=$(echo $selection | awk '{print $2}')
   local instance_status=$(echo $selection | awk '{print $5}')
 
-  if [ "$instance_status" != "running" ]; then
+  if [[ "$instance_status" != "running" ]]; then
     echo ""
-    echo "Aborting. Instance is $instance_status."
-  elif [ -n "$public_dns" ]; then
+    echo "Aborting."
+    if [[ -n "$instance_status" ]]; then
+      printf "Instance %s is not running. Current status: %s\n" "$name" "$instance_status"
+    fi
+  elif [[ -n "$public_dns" && "$connection" == "ssh" ]]; then
     local default_username="ec2-user"
     local username_prompt="Enter username [$default_username]: "
     echo -n "$username_prompt"
     read username
     username=${username:-$default_username}
     echo ""
-    echo "Connecting to $public_dns..."
+    echo "Connecting to $name with the dns: $public_dns..."
     ssh "$username@$public_dns"
+  elif [[ -n "$instance_id" && "$connection" == "ssm" ]]; then
+    echo ""
+    echo "Connecting to $name with the instance id: $instance_id..."
+    aws ssm start-session --target "$instance_id"
   else
     echo ""
-    echo "No instance selected."
+    echo "Unable to connect to instance $name - $instance_id with connection type $connection."
   fi
 }
 
 alias sshaws='_aws_ssh_main'
 alias awsssh='_aws_ssh_main'
+alias awsssm='_aws_ssh_main'
