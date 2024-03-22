@@ -2,9 +2,9 @@
 # aws-ssh.plugin.zsh
 
 # Check for required commands
-for cmd in bat awk fzf aws rg; do
+for cmd in bat awk fzf aws rg tmux; do
   if ! command -v $cmd &>/dev/null; then
-    echo "Missing required tool: $cmd"
+    echo "AWSSSH:INFO: Missing required tool: $cmd"
     exit 1
   fi
 done
@@ -12,7 +12,7 @@ done
 # Check for credentials with AWS_PROFILE, and/or aws sts get-caller-identity
 _aws_check_credentials() {
   if [[ -z "$AWS_PROFILE" || -z "$(aws sts get-caller-identity)" ]]; then
-    echo "AWS credentials not found. Please set AWS_PROFILE or run 'aws sso configure', 'aws sso login', etc. as needed."
+    echo "AWSSSH:INFO: AWS credentials not found. Please set AWS_PROFILE or run 'aws sso configure', 'aws sso login', etc. as needed."
     return 1
   fi
 }
@@ -35,36 +35,54 @@ _aws_query_for_instances() {
     awk '{printf "%-30s\t%-20s\t%-15s\t%-15s\t%-15s\t%-20s\t%-10s\t%s\n", $1, $2, $3, $4, $5, $6, $7, $8}'
 }
 
+_aws_ssh_command() {
+  local selection=$1
+  local connection=$2
+  local username=$3
+
+  local name=$(echo $selection | awk '{print $1}')
+  local public_dns=$(echo $selection | awk '{print $8}')
+  local instance_id=$(echo $selection | awk '{print $2}')
+  local instance_status=$(echo $selection | awk '{print $5}')
+
+  if [[ "$instance_status" != "running" ]]; then
+    echo "AWSSSH:INFO: Instance $name is not running. Current status: $instance_status"
+    return 1
+  fi
+
+  if [[ "$connection" == "ssh" && -n "$public_dns" ]]; then
+    echo "AWSSSH:INFO: Connecting to $name with the dns: $public_dns..."
+    ssh "$username@$public_dns"
+  elif [[ "$connection" == "ssm" && -n "$instance_id" ]]; then
+    echo "AWSSSH:INFO: Connecting to $name with the instance id: $instance_id... over SSH using AWS SSM as a proxy."
+    ssh -o ProxyCommand='aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p' "$username@$instance_id"
+  else
+    echo "AWSSSH:INFO: Unable to connect to instance $name - $instance_id with connection type $connection."
+  fi
+}
+
 _aws_ssh_main() {
 
   _aws_check_credentials || return 1
 
   local default_region=$(aws configure get region)
-  local region_prompt="Enter AWS region [$default_region]: "
   local default_tag_key="Name"
-  local tag_key_prompt="Enter tag key [$default_tag_key]: "
   local default_tag_value="*"
-  local tag_value_prompt="Enter tag value [$default_tag_value]: "
   local default_connection="ssh"
-  local connection_prompt="Enter connection type (ssm/ssh) - [$default_connection]: "
 
-  echo -n "$region_prompt"
-  read region
+  read "?Enter AWS region [$default_region]: " region
   region=${region:-$default_region}
 
-  echo -n "$tag_key_prompt"
-  read tag_key
+  read "?Enter tag key [$default_tag_key]: " tag_key
   tag_key=${tag_key:-$default_tag_key}
 
-  echo -n "$tag_value_prompt"
-  read tag_value
+  read "?Enter tag value [$default_tag_value]: " tag_value
   tag_value=${tag_value:-$default_tag_value}
 
-  echo -n "$connection_prompt"
-  read connection
+  read "?Enter connection type (ssm/ssh) - [$default_connection]: " connection
   connection=${connection:-$default_connection}
 
-  local selection=$(
+  local selections=$(
     _aws_query_for_instances "$region" "$tag_key" "$tag_value" |
       fzf \
         --height=40% \
@@ -83,39 +101,15 @@ _aws_ssh_main() {
         awk -F"\t" "{
           print \"Name: \" \$1 \"\\nInstance ID: \" \$2 \"\\nPrivate IP: \" \$3 \"\\nPublic IP: \" \$4 \"\\nStatus: \" \$5 \"\\nAMI: \" \$6 \"\\nType: \" \$7 \"\\nPublic DNS Name: \" \$8
         }"
-      ' \
+        ' \
         --delimiter=$'\t' \
         --with-nth=1,2,3,4,5
   )
 
-  local name=$(echo $selection | awk '{print $1}')
-  local public_dns=$(echo $selection | awk '{print $8}')
-  local instance_id=$(echo $selection | awk '{print $2}')
-  local instance_status=$(echo $selection | awk '{print $5}')
+  read "?Enter username [ec2-user]: " username
+  username=${username:-ec2-user}
 
-  if [[ "$instance_status" != "running" ]]; then
-    echo ""
-    echo "Aborting."
-    if [[ -n "$instance_status" ]]; then
-      printf "Instance %s is not running. Current status: %s\n" "$name" "$instance_status"
-    fi
-  elif [[ -n "$public_dns" && "$connection" == "ssh" ]]; then
-    local default_username="ec2-user"
-    local username_prompt="Enter username [$default_username]: "
-    echo -n "$username_prompt"
-    read username
-    username=${username:-$default_username}
-    echo ""
-    echo "Connecting to $name with the dns: $public_dns..."
-    ssh "$username@$public_dns"
-  elif [[ -n "$instance_id" && "$connection" == "ssm" ]]; then
-    echo ""
-    echo "Connecting to $name with the instance id: $instance_id..."
-    aws ssm start-session --target "$instance_id"
-  else
-    echo ""
-    echo "Unable to connect to instance $name - $instance_id with connection type $connection."
-  fi
+  _aws_ssh_command "$selections" "$connection" "$username"
 }
 
 alias sshaws='_aws_ssh_main'
