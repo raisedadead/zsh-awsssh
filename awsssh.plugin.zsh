@@ -64,26 +64,34 @@ _launch_connections() {
   local connection="$2"
   local username="$3"
 
-  # Ensure the asw_ssh session exists
-  tmux has-session -t "asw_ssh" 2>/dev/null || tmux new-session -d -s "asw_ssh"
+  local selection_count=$(echo "$selections" | wc -l)
 
-  while IFS= read -r selection; do
-    local name=$(echo $selection | awk '{print $1}')
-    local instance_id=$(echo $selection | awk '{print $2}')
-    local window_name="ssh:${name}:${instance_id}"
+  if [[ $selection_count -gt 1 ]]; then
+    # Ensure the asw_ssh session exists
+    tmux has-session -t "asw_ssh" 2>/dev/null || tmux new-session -d -s "asw_ssh"
 
-    # Check if the window already exists in the asw_ssh session
-    if ! tmux list-windows -t "asw_ssh" | grep -q "$window_name"; then
-      # Create the window directly in the asw_ssh session
-      tmux new-window -d -n "$window_name" -t "asw_ssh" \
-        "zsh -c 'source $HOME/.zshrc; _aws_ssh_command \"$selection\" \"$connection\" \"$username\"; zsh'"
-    else
-      echo "AWSSSH:ERROR: Window $window_name already exists."
-    fi
-  done <<< "$selections"
+    while IFS= read -r selection; do
+      local name=$(echo $selection | awk '{print $1}')
+      local instance_id=$(echo $selection | awk '{print $2}')
+      local window_name="ssh:${name}:${instance_id}"
 
-  # Optionally, switch to the asw_ssh session. Remove this line if not needed.
-  tmux attach-session -t "asw_ssh"
+      # Check if the window already exists in the asw_ssh session
+      if ! tmux list-windows -t "asw_ssh" | grep -q "$window_name"; then
+        # Create the window directly in the asw_ssh session
+        tmux new-window -d -n "$window_name" -t "asw_ssh" \
+          "zsh -c 'source $HOME/.zshrc; _aws_ssh_command \"$selection\" \"$connection\" \"$username\"; zsh'"
+      else
+        echo "AWSSSH:ERROR: Window $window_name already exists."
+      fi
+    done <<<"$selections"
+
+    # Optionally, switch to the asw_ssh session. Remove this line if not needed.
+    tmux attach-session -t "asw_ssh"
+  else
+    # Launch a normal SSH session
+    local selection=$(echo "$selections" | head -n 1)
+    _aws_ssh_command "$selection" "$connection" "$username"
+  fi
 }
 
 # Main function
